@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
@@ -52,3 +55,19 @@ jobs:
           name: Antena-ipa
           path: Antena.ipa
           retention-days: 30
+
+      # Publica la IPA como release: enlace fijo y público
+      # https://github.com/<repo>/releases/latest/download/Antena.ipa
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          TAG="v${VERSION}-build${GITHUB_RUN_NUMBER}"
+          shasum -a 256 Antena.ipa | tee Antena.ipa.sha256
+          gh release create "$TAG" Antena.ipa Antena.ipa.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Antena $VERSION (build $GITHUB_RUN_NUMBER)" \
+            --notes "IPA sin firmar. Fírmala con ESign." \
+            --latest
