@@ -11,7 +11,7 @@ struct ChannelRow: View {
         let fav = library.isFavorite(channel)
         Button(action: onPlay) {
             HStack(spacing: 12) {
-                ChannelLogo(urlString: channel.logo)
+                ChannelLogo(urlString: channel.logo, name: channel.name)
                     .frame(width: 56, height: 38)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(channel.name)
@@ -53,6 +53,13 @@ struct ChannelRow: View {
 
 struct ChannelLogo: View {
     let urlString: String?
+    var name: String = ""
+
+    private var initials: String {
+        let words = name.split(separator: " ").filter { $0.first?.isLetter == true || $0.first?.isNumber == true }
+        let letters = words.prefix(2).compactMap { $0.first }
+        return letters.isEmpty ? "TV" : String(letters).uppercased()
+    }
 
     var body: some View {
         AsyncImage(url: urlString.flatMap(URL.init(string:))) { phase in
@@ -61,8 +68,12 @@ struct ChannelLogo: View {
                 image.resizable().scaledToFit()
             default:
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.quaternary)
-                    .overlay(Image(systemName: "tv").foregroundStyle(.secondary))
+                    .fill(Color.accentColor.opacity(0.18))
+                    .overlay(
+                        Text(initials)
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(.tint)
+                    )
             }
         }
     }

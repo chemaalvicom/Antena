@@ -44,6 +44,13 @@ final class Library {
     func load() {
         guard !loaded else { return }
         loaded = true
+        if Launch.isDemo {
+            playlists = DemoData.playlists
+            let all = playlists.first?.channels ?? []
+            favorites = [1, 5, 11, 16, 25].compactMap { all.indices.contains($0) ? all[$0] : nil }
+            recents = [0, 6, 13, 21].compactMap { all.indices.contains($0) ? all[$0] : nil }
+            return
+        }
         let dec = JSONDecoder()
         if let d = try? Data(contentsOf: Self.playlistsFile), let p = try? dec.decode([Playlist].self, from: d) {
             playlists = p

@@ -14,9 +14,10 @@ struct PlaylistsView: View {
     @State private var renaming: Playlist?
     @State private var newName = ""
     @State private var errorText: String?
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if library.playlists.isEmpty {
                     ContentUnavailableView {
@@ -75,6 +76,7 @@ struct PlaylistsView: View {
                 }
             }
             .sheet(isPresented: $showAdd) { AddPlaylistView() }
+            .task { await applyLaunchArguments() }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.m3uPlaylist, .plainText, .data]) { result in
                 switch result {
                 case .success(let url):
@@ -93,6 +95,24 @@ struct PlaylistsView: View {
             } message: {
                 Text(errorText ?? "")
             }
+        }
+    }
+
+    /// Navegación inicial para las capturas del simulador (ver Demo.swift).
+    @MainActor private func applyLaunchArguments() async {
+        guard Launch.isDemo else { return }
+        library.load()
+        try? await Task.sleep(for: .milliseconds(300))
+        if Launch.has("-add") { showAdd = true }
+        guard let first = library.playlists.first else { return }
+        switch Launch.value("-open") {
+        case "playlist":
+            path.append(first.id)
+        case "group":
+            path.append(first.id)
+            path.append(GroupRoute(playlistID: first.id, group: first.groups.dropFirst().first ?? first.groups.first))
+        default:
+            break
         }
     }
 

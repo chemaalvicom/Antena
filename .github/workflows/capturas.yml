@@ -1,0 +1,103 @@
+name: Capturas simulador
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  capturas:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar XcodeGen y CocoaPods
+        run: |
+          brew install xcodegen
+          command -v pod >/dev/null || sudo gem install cocoapods
+
+      - name: Generar proyecto
+        run: |
+          xcodegen generate
+          pod install --repo-update
+
+      - name: Elegir simulador
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys, re
+          d = json.load(sys.stdin)["devices"]
+          best = None
+          for rt, devs in d.items():
+              if "iOS" not in rt: continue
+              m = re.search(r"iOS-(\d+)-(\d+)", rt)
+              ver = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+              for x in devs:
+                  n = x["name"]
+                  if not n.startswith("iPhone"): continue
+                  score = (ver, 2 if "Pro Max" in n else 1 if "Pro" in n else 0, n)
+                  if best is None or score > best[0]: best = (score, x["udid"], n)
+          print(best[1]); print(best[2], file=sys.stderr)
+          ')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Compilar para simulador
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace Antena.xcworkspace \
+            -scheme Antena \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$UDID" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tail -n 80
+
+      - name: Arrancar simulador
+        run: |
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --cellularMode active --cellularBars 4 --wifiBars 3
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/Antena.app
+
+      - name: Hacer capturas
+        run: |
+          mkdir -p capturas
+          APP=com.chemablanco.antena
+          shot() {
+            local name="$1" wait="$2"; shift 2
+            xcrun simctl terminate "$UDID" "$APP" 2>/dev/null || true
+            xcrun simctl launch "$UDID" "$APP" "$@"
+            sleep "$wait"
+            xcrun simctl io "$UDID" screenshot "capturas/$name.png"
+            echo "OK $name"
+          }
+          shot 01_listas      6  -demo -tab 0
+          shot 02_grupos      5  -demo -open playlist
+          shot 03_canales     5  -demo -open group
+          shot 04_reproductor 14 -demo -play
+          shot 05_favoritos   5  -demo -tab 1
+          shot 06_recientes   5  -demo -tab 2
+          shot 07_ajustes     5  -demo -tab 3
+          shot 08_anadir      5  -demo -add
+          ls -lh capturas
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capturas
+          path: capturas
+
+      - name: Publicar capturas
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete capturas --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create capturas capturas/*.png \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Capturas del simulador" \
+            --notes "Capturas generadas automáticamente con datos de ejemplo." \
+            --prerelease --latest=false
