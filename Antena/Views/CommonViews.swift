@@ -56,7 +56,7 @@ struct ChannelLogo: View {
     var name: String = ""
 
     private var initials: String {
-        let words = name.split(separator: " ").filter { $0.first?.isLetter == true || $0.first?.isNumber == true }
+        let words = name.split(separator: " ").filter { $0.first?.isLetter == true }
         let letters = words.prefix(2).compactMap { $0.first }
         return letters.isEmpty ? "TV" : String(letters).uppercased()
     }
