@@ -81,6 +81,20 @@ final class VPNManager {
             }
             observeStatus()
             loaded = true
+
+            // Configuración que GitHub Actions mete en la app (secret WG_CONFIG): se instala sola,
+            // sin QR. Si una versión nueva trae otra distinta (claves rotadas), la sustituye.
+            if let embedded = Self.embeddedConfig {
+                let current = ConfigKeychain.load()?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if current != embedded || manager == nil {
+                    do {
+                        try await install(config: embedded)
+                        return
+                    } catch {
+                        lastError = "No se pudo instalar la VPN: \(error.localizedDescription)"
+                    }
+                }
+            }
         }
         if summary != nil && !isConnected && status != .connecting {
             userStopped = false
@@ -98,6 +112,17 @@ final class VPNManager {
     }
 
     // MARK: Configuración
+
+    /// Configuración wg-quick incluida en la app al compilar (solo en builds de TestFlight).
+    static var embeddedConfig: String? {
+        guard let url = Bundle.main.url(forResource: "vpn-embebida", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// true si la app trae la VPN ya configurada (no hace falta importar nada).
+    var hasEmbeddedConfig: Bool { Self.embeddedConfig != nil }
 
     /// Valida, guarda en el Keychain, registra la VPN en el sistema y conecta.
     func install(config raw: String) async throws {

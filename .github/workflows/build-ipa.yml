@@ -13,11 +13,17 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      # Secrets de firma (ver FIRMA.md). Si faltan, se compila sin firmar solo para comprobar el código.
+      # Firma (ver FIRMA.md). Si faltan, se compila sin firmar solo para comprobar el código.
       CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
       CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
       APP_PROFILE_BASE64: ${{ secrets.APP_PROFILE_BASE64 }}
       TUNNEL_PROFILE_BASE64: ${{ secrets.TUNNEL_PROFILE_BASE64 }}
+      # Configuración WireGuard que se mete dentro de la app (sin QR). Solo en builds de TestFlight.
+      WG_CONFIG: ${{ secrets.WG_CONFIG }}
+      # Clave de API de App Store Connect para subir a TestFlight.
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,9 +49,9 @@ jobs:
         id: signing
         run: |
           if [ -z "$CERT_P12_BASE64" ] || [ -z "$APP_PROFILE_BASE64" ] || [ -z "$TUNNEL_PROFILE_BASE64" ]; then
-            echo "::warning::Faltan los secrets de firma: la IPA saldrá SIN FIRMAR y la VPN no funcionará si la firmas con ESign. Ver FIRMA.md"
+            echo "::warning::Faltan los secrets de firma: la IPA saldrá SIN FIRMAR y la VPN no funcionará. Ver FIRMA.md"
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            { echo "TEAM_ID="; echo "APP_PROFILE_NAME="; echo "TUNNEL_PROFILE_NAME="; } >> "$GITHUB_ENV"
+            { echo "TEAM_ID="; echo "APP_PROFILE_NAME="; echo "TUNNEL_PROFILE_NAME="; echo "EXPORT_METHOD=none"; } >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -79,11 +85,10 @@ jobs:
             echo "::error::El .p12 no contiene la clave privada (¿es un .cer renombrado?). Expórtalo con la clave privada."
             exit 1
           }
-          grep -m1 "subject=" "$RUNNER_TEMP/cert.pem" || true
           IMPORT_PASS="$(uuidgen)"
           IMPORT_PASS="$IMPORT_PASS" "$OPENSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/cert.pem" \
             -passout env:IMPORT_PASS -out "$RUNNER_TEMP/cert-mac.p12"
-          rm -f "$RUNNER_TEMP/cert.pem" "$RUNNER_TEMP/p12.err"
+          rm -f "$RUNNER_TEMP/cert.pem" "$RUNNER_TEMP/p12.err" "$RUNNER_TEMP/cert.p12"
 
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
@@ -92,28 +97,31 @@ jobs:
           rm -f "$RUNNER_TEMP/cert-mac.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
-          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
 
-          # Perfiles de aprovisionamiento (app y extensión)
+          # Perfiles (app y extensión). Se referencian por UUID para evitar problemas con los nombres.
           install_profile() {
             local file="$RUNNER_TEMP/$1.mobileprovision"
-            echo "$2" | base64 --decode > "$file"
+            echo "$2" | tr -d ' \r\n' | base64 --decode > "$file"
             security cms -D -i "$file" > "$RUNNER_TEMP/$1.plist"
-            local uuid name
-            uuid=$(plutil -extract UUID raw -o - "$RUNNER_TEMP/$1.plist")
-            name=$(plutil -extract Name raw -o - "$RUNNER_TEMP/$1.plist")
+            local uuid
+            uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/$1.plist")
             for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
               mkdir -p "$dir"
               cp "$file" "$dir/$uuid.mobileprovision"
             done
-            echo "$name"
+            echo "$uuid"
           }
-          APP_PROFILE_NAME=$(install_profile app "$APP_PROFILE_BASE64")
-          TUNNEL_PROFILE_NAME=$(install_profile tunnel "$TUNNEL_PROFILE_BASE64")
-          TEAM_ID=$(plutil -extract TeamIdentifier.0 raw -o - "$RUNNER_TEMP/app.plist")
+          APP_PROFILE_UUID=$(install_profile app "$APP_PROFILE_BASE64")
+          TUNNEL_PROFILE_UUID=$(install_profile tunnel "$TUNNEL_PROFILE_BASE64")
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/app.plist")
+
+          for p in app tunnel; do
+            echo "Perfil $p: $(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/$p.plist" | LC_ALL=C tr -cd '[:print:]') · App ID $(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$RUNNER_TEMP/$p.plist")"
+          done
 
           # Ad Hoc si el perfil lleva lista de dispositivos; si no, App Store (TestFlight)
-          if plutil -extract ProvisionedDevices raw -o - "$RUNNER_TEMP/app.plist" >/dev/null 2>&1; then
+          if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/app.plist" >/dev/null 2>&1; then
             METHOD=release-testing
           else
             METHOD=app-store-connect
@@ -121,12 +129,33 @@ jobs:
 
           {
             echo "TEAM_ID=$TEAM_ID"
-            echo "APP_PROFILE_NAME=$APP_PROFILE_NAME"
-            echo "TUNNEL_PROFILE_NAME=$TUNNEL_PROFILE_NAME"
+            echo "APP_PROFILE_NAME=$APP_PROFILE_UUID"
+            echo "TUNNEL_PROFILE_NAME=$TUNNEL_PROFILE_UUID"
             echo "EXPORT_METHOD=$METHOD"
           } >> "$GITHUB_ENV"
           echo "signed=true" >> "$GITHUB_OUTPUT"
-          echo "Equipo $TEAM_ID · app: «$APP_PROFILE_NAME» · túnel: «$TUNNEL_PROFILE_NAME» · método $METHOD"
+          echo "Equipo $TEAM_ID - metodo $METHOD"
+
+      # La configuración con la clave privada solo viaja dentro de builds de TestFlight
+      # (privadas de tu cuenta). Nunca en una IPA que se publique en el repositorio.
+      - name: Incluir configuración de la VPN
+        id: vpnconf
+        run: |
+          if [ -z "$WG_CONFIG" ]; then
+            echo "embedded=false" >> "$GITHUB_OUTPUT"
+            echo "Sin WG_CONFIG: la app pedirá la configuración (QR/archivo) al abrirla"
+            exit 0
+          fi
+          if [ "$EXPORT_METHOD" != "app-store-connect" ]; then
+            echo "::error::WG_CONFIG solo se incluye en builds de TestFlight (perfiles App Store). Con perfiles Ad Hoc la IPA podría acabar publicada con tu clave."
+            exit 1
+          fi
+          printf '%s\n' "$WG_CONFIG" | tr -d '\r' > Antena/Resources/vpn-embebida.txt
+          for key in '\[Interface\]' 'PrivateKey' '\[Peer\]' 'PublicKey' 'Endpoint'; do
+            grep -q "$key" Antena/Resources/vpn-embebida.txt || { echo "::error::A WG_CONFIG le falta $key"; exit 1; }
+          done
+          echo "embedded=true" >> "$GITHUB_OUTPUT"
+          echo "Configuración de la VPN incluida en la app"
 
       - name: Generar proyecto
         run: |
@@ -143,7 +172,23 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/AntenaPro.xcarchive \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             archive | tail -n 200
+
+          DESTINATION=export
+          AUTH_ARGS=()
+          if [ "$EXPORT_METHOD" = "app-store-connect" ]; then
+            if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+              echo "::error::Perfiles de App Store sin clave de API: faltan ASC_KEY_ID, ASC_ISSUER_ID o ASC_KEY_P8"
+              exit 1
+            fi
+            mkdir -p "$RUNNER_TEMP/asc"
+            printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+            AUTH_ARGS=(-authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+                       -authenticationKeyID "$ASC_KEY_ID"
+                       -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+            DESTINATION=upload
+          fi
 
           cat > build/ExportOptions.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -151,9 +196,12 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>destination</key><string>${DESTINATION}</string>
             <key>teamID</key><string>${TEAM_ID}</string>
             <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
             <key>stripSwiftSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
             <key>provisioningProfiles</key>
             <dict>
               <key>com.chemablanco.antenapro</key><string>${APP_PROFILE_NAME}</string>
@@ -166,9 +214,17 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath build/AntenaPro.xcarchive \
             -exportOptionsPlist build/ExportOptions.plist \
-            -exportPath build/export | tail -n 50
-          cp build/export/*.ipa AntenaPro.ipa
-          ls -lh AntenaPro.ipa
+            -exportPath build/export \
+            "${AUTH_ARGS[@]}" | tail -n 80
+          rm -rf "$RUNNER_TEMP/asc"
+
+          if [ "$DESTINATION" = "upload" ]; then
+            echo "Subida a TestFlight: build $GITHUB_RUN_NUMBER. Aparecerá en la app TestFlight en unos minutos."
+            echo "### ANTENA PRO subida a TestFlight (build $GITHUB_RUN_NUMBER)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cp build/export/*.ipa AntenaPro.ipa
+            ls -lh AntenaPro.ipa
+          fi
 
       - name: Compilar (sin firmar, solo comprobación)
         if: steps.signing.outputs.signed != 'true'
@@ -190,19 +246,22 @@ jobs:
           zip -qry AntenaPro.ipa Payload
           ls -lh AntenaPro.ipa
 
-      - name: Limpiar llavero
-        if: always() && steps.signing.outputs.signed == 'true'
-        run: security delete-keychain "$RUNNER_TEMP/firma.keychain-db" || true
+      - name: Limpiar llavero y configuración
+        if: always()
+        run: |
+          rm -f Antena/Resources/vpn-embebida.txt
+          security delete-keychain "$RUNNER_TEMP/firma.keychain-db" 2>/dev/null || true
 
+      # Solo se publican IPAs que NO llevan la configuración de la VPN dentro.
       - uses: actions/upload-artifact@v4
+        if: steps.vpnconf.outputs.embedded != 'true' && env.EXPORT_METHOD != 'app-store-connect'
         with:
           name: AntenaPro-ipa
           path: AntenaPro.ipa
           retention-days: 30
 
-      # La IPA firmada no contiene claves de la VPN (se importan en el iPhone) y una IPA
-      # Ad Hoc solo se instala en los dispositivos registrados en tu perfil.
       - name: Publicar release
+        if: steps.vpnconf.outputs.embedded != 'true' && env.EXPORT_METHOD != 'app-store-connect'
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED: ${{ steps.signing.outputs.signed }}
@@ -210,7 +269,7 @@ jobs:
           VERSION=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"(.*)".*/\1/')
           TAG="pro-v${VERSION}-build${GITHUB_RUN_NUMBER}"
           if [ "$SIGNED" = "true" ]; then
-            NOTES="IPA firmada (${EXPORT_METHOD}). Instálala tal cual, sin volver a firmarla."
+            NOTES="IPA firmada (Ad Hoc). Instálala tal cual, sin volver a firmarla. No lleva la configuración de la VPN."
           else
             NOTES="IPA SIN FIRMAR: solo comprueba que compila. La VPN necesita la firma de Actions (ver FIRMA.md)."
           fi

@@ -127,3 +127,26 @@ levanta sola cada vez que abras la app.
 
 Después de esto la configuración de la app oficial de WireGuard deja de funcionar
 (su clave se ha revocado): puedes borrarla.
+
+## 5. TestFlight: sin QR, sin archivos, sin PC
+
+Con perfiles **App Store** (en lugar de Ad Hoc) el workflow sube cada versión a TestFlight y
+mete dentro de la app la configuración de la VPN. Al abrirla la primera vez solo hay que
+aceptar el aviso de iOS «Añadir configuraciones VPN».
+
+Secrets adicionales:
+
+| Secret | Contenido |
+|---|---|
+| `WG_CONFIG` | el texto completo de `/etc/wireguard/antenapro.conf` del servidor |
+| `ASC_KEY_ID` | Key ID de la clave de API de App Store Connect |
+| `ASC_ISSUER_ID` | Issuer ID (arriba de la lista de claves) |
+| `ASC_KEY_P8` | el contenido del archivo `AuthKey_XXXX.p8` (texto, desde `-----BEGIN` hasta `END-----`) |
+
+Y `APP_PROFILE_BASE64` / `TUNNEL_PROFILE_BASE64` pasan a ser los perfiles de tipo **App Store**.
+
+Seguridad: el workflow **solo** incluye `WG_CONFIG` en builds de TestFlight (privadas de tu
+cuenta) y en ese caso no publica ninguna IPA en *Releases* ni como artefacto.
+
+Para cambiar las claves de la VPN basta con actualizar `WG_CONFIG` y lanzar el workflow: la
+versión nueva sustituye la configuración guardada en el iPhone al abrirse.
