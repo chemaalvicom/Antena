@@ -27,8 +27,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Versión de Xcode
-        run: xcodebuild -version
+      # App Store Connect solo acepta apps compiladas con el SDK de iOS 26 (Xcode 26) o posterior.
+      - name: Elegir Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_[3-9][0-9]*.app 2>/dev/null \
+                 | grep -viE 'beta' | sort -V | tail -1)
+          if [ -z "$XC" ]; then
+            echo "::error::Esta imagen de GitHub no trae Xcode 26 estable"
+            exit 1
+          fi
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       # Go para compilar la parte de WireGuard. Versión fijada: el parche de runtime de
       # wireguard-apple está probado con esta rama de Go.
