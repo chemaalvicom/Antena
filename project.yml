@@ -9,11 +9,21 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "1.0.0"
+    MARKETING_VERSION: "2.0.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Firma: los rellena el workflow de GitHub Actions a partir de los secrets.
+    # Vacíos = compilación sin firmar (solo para comprobar que compila).
+    DEVELOPMENT_TEAM: "${TEAM_ID}"
+    CODE_SIGN_IDENTITY: "Apple Distribution"
     SWIFT_VERSION: "5.0"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     ENABLE_BITCODE: NO
+
+# WireGuardKit (oficial, MIT). scripts/build-wireguard.sh lo descarga en Vendor/
+# y compila la parte en Go (libwg-go.a) antes de generar el proyecto.
+packages:
+  WireGuardKit:
+    path: Vendor/wireguard-apple
 
 targets:
   Antena:
@@ -21,10 +31,16 @@ targets:
     platform: iOS
     sources:
       - path: Antena
+      - path: Shared
+    dependencies:
+      - target: AntenaTunnel
     scheme: {}
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.chemablanco.antena
+        PRODUCT_BUNDLE_IDENTIFIER: com.chemablanco.antenapro
+        CODE_SIGN_ENTITLEMENTS: Antena/Antena.entitlements
+        CODE_SIGN_STYLE: Manual
+        PROVISIONING_PROFILE_SPECIFIER: "${APP_PROFILE_NAME}"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -32,7 +48,7 @@ targets:
     info:
       path: Antena/Info.plist
       properties:
-        CFBundleDisplayName: Antena
+        CFBundleDisplayName: ANTENA PRO
         CFBundleDevelopmentRegion: es
         CFBundleLocalizations: [es]
         CFBundleShortVersionString: $(MARKETING_VERSION)
@@ -47,7 +63,8 @@ targets:
         LSSupportsOpeningDocumentsInPlace: false
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSLocalNetworkUsageDescription: "Antena usa la red local para reproducir canales y enviarlos a tu televisor."
+        NSLocalNetworkUsageDescription: "ANTENA PRO usa la red local para reproducir canales y enviarlos a tu televisor."
+        NSCameraUsageDescription: "ANTENA PRO usa la cámara para leer el código QR con la configuración de tu VPN."
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -57,3 +74,33 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  AntenaTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: AntenaTunnel
+      - path: Shared
+    dependencies:
+      - package: WireGuardKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chemablanco.antenapro.tunnel
+        PRODUCT_NAME: AntenaTunnel
+        CODE_SIGN_ENTITLEMENTS: AntenaTunnel/AntenaTunnel.entitlements
+        CODE_SIGN_STYLE: Manual
+        PROVISIONING_PROFILE_SPECIFIER: "${TUNNEL_PROFILE_NAME}"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        # Aquí está libwg-go.a, compilado por scripts/build-wireguard.sh
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/wg-go"
+    info:
+      path: AntenaTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: ANTENA PRO Túnel
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider

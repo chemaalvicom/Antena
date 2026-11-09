@@ -7,6 +7,7 @@ import MobileVLCKit
 struct PlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(Library.self) private var library
+    @Environment(VPNManager.self) private var vpn
     @Environment(\.verticalSizeClass) private var vSize
     @AppStorage("engine") private var engine = Engine.auto.rawValue
     @AppStorage("userAgent") private var userAgent = Defaults.userAgent
@@ -33,10 +34,16 @@ struct PlayerScreen: View {
             VStack(spacing: 0) {
                 if !landscape { topBar }
                 Group {
-                    if useVLC {
-                        VLCPlayerView(channel: channel, userAgent: userAgent)
+                    // Siempre con VPN: sin túnel no se monta el reproductor (se corta el flujo)
+                    // y en cuanto vuelve la conexión se reanuda solo.
+                    if vpn.isConnected || Launch.isDemo {
+                        if useVLC {
+                            VLCPlayerView(channel: channel, userAgent: userAgent)
+                        } else {
+                            ApplePlayerView(channel: channel, userAgent: userAgent)
+                        }
                     } else {
-                        ApplePlayerView(channel: channel, userAgent: userAgent)
+                        VPNBlockedView()
                     }
                 }
                 .id(useVLC)
@@ -69,6 +76,9 @@ struct PlayerScreen: View {
                     .lineLimit(1)
             }
             Spacer()
+            Image(systemName: vpn.isConnected ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                .foregroundStyle(vpn.isConnected ? .green : .orange)
+                .accessibilityLabel(vpn.isConnected ? "VPN activa" : "VPN caída")
             Button { library.toggleFavorite(channel) } label: {
                 Image(systemName: library.isFavorite(channel) ? "star.fill" : "star")
                     .frame(width: 38, height: 38)

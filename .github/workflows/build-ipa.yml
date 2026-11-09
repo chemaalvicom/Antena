@@ -1,8 +1,8 @@
-name: Compilar IPA
+name: Compilar ANTENA PRO
 
 on:
   push:
-    branches: [main]
+    branches: [main, antena-pro]
   workflow_dispatch:
 
 permissions:
@@ -11,24 +11,134 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      # Secrets de firma (ver FIRMA.md). Si faltan, se compila sin firmar solo para comprobar el código.
+      CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
+      CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+      APP_PROFILE_BASE64: ${{ secrets.APP_PROFILE_BASE64 }}
+      TUNNEL_PROFILE_BASE64: ${{ secrets.TUNNEL_PROFILE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Versión de Xcode
         run: xcodebuild -version
 
+      # Go para compilar la parte de WireGuard. Versión fijada: el parche de runtime de
+      # wireguard-apple está probado con esta rama de Go.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21.13'
+          cache: false
+
       - name: Instalar XcodeGen y CocoaPods
         run: |
           brew install xcodegen
           command -v pod >/dev/null || sudo gem install cocoapods
+
+      - name: Compilar WireGuard (Go → libwg-go.a)
+        run: ./scripts/build-wireguard.sh
+
+      - name: Preparar firma
+        id: signing
+        run: |
+          if [ -z "$CERT_P12_BASE64" ] || [ -z "$APP_PROFILE_BASE64" ] || [ -z "$TUNNEL_PROFILE_BASE64" ]; then
+            echo "::warning::Faltan los secrets de firma: la IPA saldrá SIN FIRMAR y la VPN no funcionará si la firmas con ESign. Ver FIRMA.md"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            { echo "TEAM_ID="; echo "APP_PROFILE_NAME="; echo "TUNNEL_PROFILE_NAME="; } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Llavero temporal con el certificado de distribución
+          KEYCHAIN="$RUNNER_TEMP/firma.keychain-db"
+          KEYCHAIN_PASS="$(uuidgen)"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # Perfiles de aprovisionamiento (app y extensión)
+          install_profile() {
+            local file="$RUNNER_TEMP/$1.mobileprovision"
+            echo "$2" | base64 --decode > "$file"
+            security cms -D -i "$file" > "$RUNNER_TEMP/$1.plist"
+            local uuid name
+            uuid=$(plutil -extract UUID raw -o - "$RUNNER_TEMP/$1.plist")
+            name=$(plutil -extract Name raw -o - "$RUNNER_TEMP/$1.plist")
+            for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+              mkdir -p "$dir"
+              cp "$file" "$dir/$uuid.mobileprovision"
+            done
+            echo "$name"
+          }
+          APP_PROFILE_NAME=$(install_profile app "$APP_PROFILE_BASE64")
+          TUNNEL_PROFILE_NAME=$(install_profile tunnel "$TUNNEL_PROFILE_BASE64")
+          TEAM_ID=$(plutil -extract TeamIdentifier.0 raw -o - "$RUNNER_TEMP/app.plist")
+
+          # Ad Hoc si el perfil lleva lista de dispositivos; si no, App Store (TestFlight)
+          if plutil -extract ProvisionedDevices raw -o - "$RUNNER_TEMP/app.plist" >/dev/null 2>&1; then
+            METHOD=release-testing
+          else
+            METHOD=app-store-connect
+          fi
+
+          {
+            echo "TEAM_ID=$TEAM_ID"
+            echo "APP_PROFILE_NAME=$APP_PROFILE_NAME"
+            echo "TUNNEL_PROFILE_NAME=$TUNNEL_PROFILE_NAME"
+            echo "EXPORT_METHOD=$METHOD"
+          } >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "Equipo $TEAM_ID · app: «$APP_PROFILE_NAME» · túnel: «$TUNNEL_PROFILE_NAME» · método $METHOD"
 
       - name: Generar proyecto
         run: |
           xcodegen generate
           pod install --repo-update
 
-      - name: Compilar (sin firmar)
+      - name: Compilar y firmar
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace Antena.xcworkspace \
+            -scheme Antena \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/AntenaPro.xcarchive \
+            archive | tail -n 200
+
+          cat > build/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.chemablanco.antenapro</key><string>${APP_PROFILE_NAME}</string>
+              <key>com.chemablanco.antenapro.tunnel</key><string>${TUNNEL_PROFILE_NAME}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath build/AntenaPro.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export | tail -n 50
+          cp build/export/*.ipa AntenaPro.ipa
+          ls -lh AntenaPro.ipa
+
+      - name: Compilar (sin firmar, solo comprobación)
+        if: steps.signing.outputs.signed != 'true'
         run: |
           set -o pipefail
           xcodebuild \
@@ -42,32 +152,39 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build | tail -n 200
-
-      - name: Empaquetar IPA
-        run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Antena.app Payload/
-          zip -qry Antena.ipa Payload
-          ls -lh Antena.ipa
+          zip -qry AntenaPro.ipa Payload
+          ls -lh AntenaPro.ipa
+
+      - name: Limpiar llavero
+        if: always() && steps.signing.outputs.signed == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/firma.keychain-db" || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Antena-ipa
-          path: Antena.ipa
+          name: AntenaPro-ipa
+          path: AntenaPro.ipa
           retention-days: 30
 
-      # Publica la IPA como release: enlace fijo y público
-      # https://github.com/<repo>/releases/latest/download/Antena.ipa
+      # La IPA firmada no contiene claves de la VPN (se importan en el iPhone) y una IPA
+      # Ad Hoc solo se instala en los dispositivos registrados en tu perfil.
       - name: Publicar release
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
           VERSION=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          TAG="v${VERSION}-build${GITHUB_RUN_NUMBER}"
-          shasum -a 256 Antena.ipa | tee Antena.ipa.sha256
-          gh release create "$TAG" Antena.ipa Antena.ipa.sha256 \
+          TAG="pro-v${VERSION}-build${GITHUB_RUN_NUMBER}"
+          if [ "$SIGNED" = "true" ]; then
+            NOTES="IPA firmada (${EXPORT_METHOD}). Instálala tal cual, sin volver a firmarla."
+          else
+            NOTES="IPA SIN FIRMAR: solo comprueba que compila. La VPN necesita la firma de Actions (ver FIRMA.md)."
+          fi
+          shasum -a 256 AntenaPro.ipa | tee AntenaPro.ipa.sha256
+          gh release create "$TAG" AntenaPro.ipa AntenaPro.ipa.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Antena $VERSION (build $GITHUB_RUN_NUMBER)" \
-            --notes "IPA sin firmar. Fírmala con ESign." \
-            --latest
+            --title "ANTENA PRO $VERSION (build $GITHUB_RUN_NUMBER)" \
+            --notes "$NOTES" \
+            --latest=false

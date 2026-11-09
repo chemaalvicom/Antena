@@ -144,6 +144,7 @@ struct RecentsView: View {
 // MARK: - Ajustes
 
 struct SettingsView: View {
+    @Environment(VPNManager.self) private var vpn
     @AppStorage("engine") private var engine = Engine.auto.rawValue
     @AppStorage("userAgent") private var userAgent = Defaults.userAgent
     @AppStorage("vlcCaching") private var caching = 1500
@@ -159,6 +160,20 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    NavigationLink {
+                        VPNSettingsView()
+                    } label: {
+                        LabeledContent {
+                            Text(vpn.status.label)
+                        } label: {
+                            Label("VPN", systemImage: vpn.isConnected ? "checkmark.shield.fill" : "exclamationmark.shield")
+                        }
+                    }
+                } footer: {
+                    Text("ANTENA PRO solo reproduce a través de tu servidor WireGuard.")
+                }
+
                 Section {
                     Picker("Motor", selection: $engine) {
                         ForEach(Engine.allCases) { Text($0.title).tag($0.rawValue) }
@@ -216,6 +231,7 @@ struct SettingsView: View {
                 Section("Acerca de") {
                     LabeledContent("Versión", value: version)
                     LabeledContent("Publicidad", value: "Ninguna")
+                    LabeledContent("VPN", value: "Servidor propio (WireGuard)")
                     LabeledContent("Rastreo", value: "Ninguno")
                 }
             }

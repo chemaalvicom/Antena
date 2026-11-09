@@ -9,6 +9,7 @@ struct PlaylistsView: View {
     @AppStorage("userAgent") private var userAgent = Defaults.userAgent
 
     @State private var showAdd = false
+    @State private var showClipboard = false
     @State private var showImporter = false
     @State private var refreshing: UUID?
     @State private var renaming: Playlist?
@@ -27,6 +28,7 @@ struct PlaylistsView: View {
                     } actions: {
                         Button("Añadir lista") { showAdd = true }
                             .buttonStyle(.borderedProminent)
+                        Button("Pegar varias desde el portapapeles") { showClipboard = true }
                         Button("Importar archivo") { showImporter = true }
                     }
                 } else {
@@ -55,6 +57,12 @@ struct PlaylistsView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VPNBanner()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                    .background(.bar)
+            }
             .navigationTitle("Listas")
             .navigationDestination(for: UUID.self) { id in
                 PlaylistDetailView(playlistID: id, playing: $playing)
@@ -69,6 +77,7 @@ struct PlaylistsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button { showAdd = true } label: { Label("Desde URL o Xtream", systemImage: "link") }
+                        Button { showClipboard = true } label: { Label("Varias desde el portapapeles", systemImage: "doc.on.clipboard") }
                         Button { showImporter = true } label: { Label("Importar archivo", systemImage: "doc") }
                     } label: {
                         Image(systemName: "plus")
@@ -76,6 +85,7 @@ struct PlaylistsView: View {
                 }
             }
             .sheet(isPresented: $showAdd) { AddPlaylistView() }
+            .sheet(isPresented: $showClipboard) { ClipboardImportView() }
             .task { await applyLaunchArguments() }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.m3uPlaylist, .plainText, .data]) { result in
                 switch result {
@@ -252,7 +262,7 @@ struct AddPlaylistView: View {
     }
 }
 
-// MARK: - Detalle: grupos
+// MARK: - Detalle: canales con selector de categorías y logos
 
 struct PlaylistDetailView: View {
     @Environment(Library.self) private var library
@@ -260,54 +270,175 @@ struct PlaylistDetailView: View {
     @Binding var playing: Channel?
     @AppStorage("userAgent") private var userAgent = Defaults.userAgent
     @State private var search = ""
+    /// nil = Todos; favoritesKey = solo favoritos; cualquier otro valor = un grupo.
+    @State private var category: String?
+
+    private static let favoritesKey = "\u{1}favoritos"
+    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)]
 
     var body: some View {
         if let playlist = library.playlists.first(where: { $0.id == playlistID }) {
             let counts = Dictionary(grouping: playlist.channels, by: \.group).mapValues(\.count)
-            List {
-                if search.isEmpty {
+            let favCount = playlist.channels.filter { library.isFavorite($0) }.count
+            let shown = filtered(playlist)
+
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
-                        NavigationLink(value: GroupRoute(playlistID: playlistID, group: nil)) {
-                            GroupRow(title: "Todos los canales", count: playlist.channels.count, icon: "square.grid.2x2")
-                        }
-                    }
-                    Section("Grupos") {
-                        ForEach(playlist.groups, id: \.self) { g in
-                            NavigationLink(value: GroupRoute(playlistID: playlistID, group: g)) {
-                                GroupRow(title: g, count: counts[g] ?? 0, icon: "folder")
+                        if shown.isEmpty {
+                            ContentUnavailableView(search.isEmpty ? "Sin canales" : "Sin resultados",
+                                                   systemImage: search.isEmpty ? "tv" : "magnifyingglass",
+                                                   description: Text(search.isEmpty ? "Esta categoría está vacía." : "Prueba con otro nombre o cambia de categoría."))
+                                .padding(.top, 40)
+                        } else {
+                            LazyVGrid(columns: columns, spacing: 14) {
+                                ForEach(shown) { ch in
+                                    ChannelTile(channel: ch) { playing = ch }
+                                }
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
                         }
-                    }
-                } else {
-                    let found = playlist.channels.filter { $0.name.localizedCaseInsensitiveContains(search) }
-                    Section("\(found.count) resultados") {
-                        ForEach(found.prefix(500)) { ch in
-                            ChannelRow(channel: ch) { playing = ch }
-                        }
+                    } header: {
+                        CategoryBar(groups: playlist.groups, counts: counts, total: playlist.channels.count,
+                                    favorites: favCount, favoritesKey: Self.favoritesKey, selection: $category)
                     }
                 }
             }
-            .searchable(text: $search, prompt: "Buscar en toda la lista")
+            .searchable(text: $search, prompt: searchPrompt)
             .navigationTitle(playlist.name)
             .refreshable {
                 if playlist.sourceURL != nil { try? await library.refresh(playlistID, userAgent: userAgent) }
+            }
+            .onChange(of: playlist.groups) {
+                if let c = category, c != Self.favoritesKey, !playlist.groups.contains(c) { category = nil }
             }
         } else {
             ContentUnavailableView("Lista no encontrada", systemImage: "questionmark.folder")
         }
     }
+
+    private var searchPrompt: String {
+        guard let category else { return "Buscar en toda la lista" }
+        return category == Self.favoritesKey ? "Buscar en favoritos" : "Buscar en \(category)"
+    }
+
+    private func filtered(_ playlist: Playlist) -> [Channel] {
+        var list = playlist.channels
+        if let category {
+            if category == Self.favoritesKey {
+                list = list.filter { library.isFavorite($0) }
+            } else {
+                list = list.filter { $0.group == category }
+            }
+        }
+        if !search.isEmpty { list = list.filter { $0.name.localizedCaseInsensitiveContains(search) } }
+        return list
+    }
 }
 
-private struct GroupRow: View {
-    let title: String
-    let count: Int
-    let icon: String
+/// Fila deslizable de categorías con el número de canales de cada una.
+private struct CategoryBar: View {
+    let groups: [String]
+    let counts: [String: Int]
+    let total: Int
+    let favorites: Int
+    let favoritesKey: String
+    @Binding var selection: String?
 
     var body: some View {
-        HStack {
-            Label(title, systemImage: icon)
-            Spacer()
-            Text("\(count)").foregroundStyle(.secondary).monospacedDigit()
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    chip("Todos", count: total, value: nil, icon: "square.grid.2x2")
+                    if favorites > 0 {
+                        chip("Favoritos", count: favorites, value: favoritesKey, icon: "star.fill")
+                    }
+                    ForEach(groups, id: \.self) { g in
+                        chip(g, count: counts[g] ?? 0, value: g, icon: nil)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+            .onChange(of: selection) {
+                withAnimation { proxy.scrollTo(selection ?? "\u{0}todos", anchor: .center) }
+            }
+        }
+        .background(.bar)
+    }
+
+    private func chip(_ title: String, count: Int, value: String?, icon: String?) -> some View {
+        let selected = selection == value
+        return Button {
+            withAnimation(.snappy) { selection = value }
+        } label: {
+            HStack(spacing: 6) {
+                if let icon { Image(systemName: icon).font(.caption) }
+                Text(title).lineLimit(1)
+                Text("\(count)")
+                    .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(selected ? AnyShapeStyle(.black.opacity(0.18)) : AnyShapeStyle(.quaternary), in: Capsule())
+            }
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 14)
+            .frame(minHeight: 36)
+            .foregroundStyle(selected ? AnyShapeStyle(.black) : AnyShapeStyle(.primary))
+            .background(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.secondarySystemBackground)), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .id(value ?? "\u{0}todos")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Canal en cuadrícula: logo grande (tvg-logo de la lista) o sus iniciales si no tiene.
+struct ChannelTile: View {
+    @Environment(Library.self) private var library
+    let channel: Channel
+    let onPlay: () -> Void
+
+    var body: some View {
+        let fav = library.isFavorite(channel)
+        Button(action: onPlay) {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack(alignment: .topTrailing) {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(.secondarySystemBackground))
+                    ChannelLogo(urlString: channel.logo, name: channel.name)
+                        .padding(channel.logo == nil ? 0 : 14)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    if fav {
+                        Image(systemName: "star.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                            .padding(8)
+                    }
+                }
+                .aspectRatio(16 / 10, contentMode: .fit)
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.quaternary))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(channel.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text(channel.group).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .padding(.horizontal, 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button { onPlay() } label: { Label("Reproducir", systemImage: "play") }
+            Button { library.toggleFavorite(channel) } label: {
+                Label(fav ? "Quitar de favoritos" : "Añadir a favoritos", systemImage: fav ? "star.slash" : "star")
+            }
+            Button { UIPasteboard.general.string = channel.url } label: {
+                Label("Copiar URL del canal", systemImage: "doc.on.doc")
+            }
         }
     }
 }

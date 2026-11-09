@@ -1,3 +1,23 @@
+# ANTENA PRO — Antena con VPN propia integrada
+
+Rama `antena-pro`: la misma app con un túnel **WireGuard** dentro, contra tu propio servidor
+(VM gratuita de Oracle Cloud en Marsella). **Siempre con VPN**: se conecta sola al abrir la
+app, no reproduce nada sin el túnel y se reconecta si cae.
+
+Novedades de la 2.0:
+- **VPN integrada** (extensión Packet Tunnel con WireGuardKit oficial). La configuración se
+  importa por **QR**, archivo `.conf` o portapapeles y se guarda en el Keychain del iPhone.
+- Pantalla de arranque que espera a la VPN, aviso de estado en *Listas*, *Ajustes › VPN* con
+  tiempo conectado, datos, último handshake e IP de salida.
+- Reproductor bloqueado mientras no hay túnel (se reanuda solo al volver).
+- **Selector de categorías** con número de canales y **cuadrícula con el logo** de cada canal.
+- **Varias listas a la vez** pegando un texto con varios enlaces (M3U o Xtream).
+
+> La firma es obligatoria para la VPN y se hace en GitHub Actions: sigue **[FIRMA.md](FIRMA.md)**.
+> Ya no vale firmar con ESign (la extensión necesita su propio perfil).
+
+---
+
 # Antena — reproductor IPTV propio para iPhone y iPad
 
 App propia en SwiftUI para ver listas IPTV (M3U/M3U8 y Xtream Codes). Sin publicidad, sin Facebook/Adjust ni ningún rastreo. Todo se guarda en el propio iPhone.

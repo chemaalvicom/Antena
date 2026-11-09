@@ -170,6 +170,44 @@ final class Library {
         return channels
     }
 
+    // MARK: Varias listas desde el portapapeles
+
+    func hasSource(_ urlString: String) -> Bool {
+        playlists.contains { $0.sourceURL == urlString }
+    }
+
+    /// Saca todas las direcciones http(s) de un texto (una por línea, separadas por espacios
+    /// o mezcladas con otro texto), sin repetidas y en el orden en que aparecen.
+    nonisolated static func playlistLinks(in text: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        let tokens = text.components(separatedBy: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "<>\"'")))
+        for token in tokens {
+            var t = token.trimmingCharacters(in: CharacterSet(charactersIn: ",;()[]"))
+            guard let start = t.range(of: "http", options: .caseInsensitive) else { continue }
+            t = String(t[start.lowerBound...])
+            guard let url = URL(string: t), let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https", url.host != nil else { continue }
+            if seen.insert(t).inserted { out.append(t) }
+        }
+        return out
+    }
+
+    /// Nombre propuesto: servidor + usuario en enlaces Xtream, o el nombre del archivo.
+    nonisolated static func suggestedName(for urlString: String) -> String {
+        guard let comps = URLComponents(string: urlString) else { return "Lista" }
+        let host = comps.host ?? "Lista"
+        if let user = comps.queryItems?.first(where: { $0.name.lowercased() == "username" })?.value, !user.isEmpty {
+            return "\(host) · \(user)"
+        }
+        let file = (comps.path as NSString).lastPathComponent
+        let stem = (file as NSString).deletingPathExtension
+        if !stem.isEmpty, !["get", "playlist", "index", "list"].contains(stem.lowercased()) {
+            return stem
+        }
+        return host
+    }
+
     /// URL M3U para proveedores Xtream Codes (servidor + usuario + contraseña).
     nonisolated static func xtreamURL(server: String, user: String, password: String, hls: Bool) -> String {
         var base = server.trimmingCharacters(in: .whitespacesAndNewlines)
