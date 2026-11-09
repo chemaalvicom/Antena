@@ -25,6 +25,11 @@ git -C "$WG" checkout -q "$WG_COMMIT"
 sed -i '' -E '1s/swift-tools-version:[0-9.]+/swift-tools-version:5.5/' "$WG/Package.swift" 2>/dev/null \
   || sed -i -E '1s/swift-tools-version:[0-9.]+/swift-tools-version:5.5/' "$WG/Package.swift"
 head -1 "$WG/Package.swift"
+# Con los SDK actuales, WireGuardKitC.h usa u_int32_t/u_char sin incluir <sys/types.h>.
+HDR="$WG/Sources/WireGuardKitC/WireGuardKitC.h"
+grep -q '<sys/types.h>' "$HDR" || {
+  printf '#include <sys/types.h>\n' | cat - "$HDR" > "$HDR.tmp" && mv "$HDR.tmp" "$HDR"
+}
 
 # Copia de GOROOT con el parche de WireGuard: los temporizadores cuentan el tiempo
 # en reposo del iPhone (si el parche no aplica en esta versión de Go, se sigue sin él).
