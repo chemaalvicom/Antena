@@ -58,16 +58,22 @@ jobs:
           # reescribe en el formato clásico que entiende "security" en macOS.
           OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
           P12_PASS="$(printf '%s' "$CERT_PASSWORD" | tr -d '\r\n')"
-          if ! P12_PASS="$P12_PASS" "$OPENSSL" pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASS \
-               -nodes -out "$RUNNER_TEMP/cert.pem" 2>"$RUNNER_TEMP/p12.err"; then
-            if P12_PASS="$P12_PASS" "$OPENSSL" pkcs12 -legacy -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASS \
-                 -nodes -out "$RUNNER_TEMP/cert.pem" 2>>"$RUNNER_TEMP/p12.err"; then
-              echo "Certificado en formato antiguo: leído con -legacy"
-            else
-              cat "$RUNNER_TEMP/p12.err"
-              echo "::error::No se pudo abrir CERT_P12_BASE64 con CERT_PASSWORD. Revisa la contraseña (sin espacios al final) y que el secret sea el .p12/.pfx en base64."
-              exit 1
-            fi
+          OPENED=false
+          # Prueba la contraseña del secret y, por si el .p12 se exportó sin contraseña, vacía.
+          for TRY in "$P12_PASS" ""; do
+            for MODE in "" "-legacy"; do
+              if P12_PASS="$TRY" "$OPENSSL" pkcs12 $MODE -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASS \
+                   -nodes -out "$RUNNER_TEMP/cert.pem" 2>>"$RUNNER_TEMP/p12.err"; then
+                OPENED=true
+                [ -z "$TRY" ] && echo "::warning::El .p12 no tiene contraseña (se ignoró CERT_PASSWORD)"
+                break 2
+              fi
+            done
+          done
+          if [ "$OPENED" != true ]; then
+            tail -3 "$RUNNER_TEMP/p12.err"
+            echo "::error::CERT_PASSWORD no abre el .p12 de CERT_P12_BASE64 (${#P12_PASS} caracteres). Revisa la contraseña o que los dos secrets sean del mismo archivo."
+            exit 1
           fi
           grep -q "PRIVATE KEY" "$RUNNER_TEMP/cert.pem" || {
             echo "::error::El .p12 no contiene la clave privada (¿es un .cer renombrado?). Expórtalo con la clave privada."
