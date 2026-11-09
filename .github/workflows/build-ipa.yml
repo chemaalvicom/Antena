@@ -178,18 +178,11 @@ jobs:
             archive | tail -n 200
 
           DESTINATION=export
-          AUTH_ARGS=()
           if [ "$EXPORT_METHOD" = "app-store-connect" ]; then
             if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
               echo "::error::Perfiles de App Store sin clave de API: faltan ASC_KEY_ID, ASC_ISSUER_ID o ASC_KEY_P8"
               exit 1
             fi
-            mkdir -p "$RUNNER_TEMP/asc"
-            printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
-            AUTH_ARGS=(-authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
-                       -authenticationKeyID "$ASC_KEY_ID"
-                       -authenticationKeyIssuerID "$ASC_ISSUER_ID")
-            DESTINATION=upload
           fi
 
           cat > build/ExportOptions.plist <<EOF
@@ -216,16 +209,30 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath build/AntenaPro.xcarchive \
             -exportOptionsPlist build/ExportOptions.plist \
-            -exportPath build/export \
-            "${AUTH_ARGS[@]}" | tail -n 80
-          rm -rf "$RUNNER_TEMP/asc"
+            -exportPath build/export | tail -n 80
+          IPA=$(ls build/export/*.ipa | head -1)
+          ls -lh "$IPA"
 
-          if [ "$DESTINATION" = "upload" ]; then
+          if [ "$EXPORT_METHOD" = "app-store-connect" ]; then
+            # altool busca la clave en ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8
+            KEYDIR="$HOME/.appstoreconnect/private_keys"
+            mkdir -p "$KEYDIR"
+            printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEYDIR/AuthKey_${ASC_KEY_ID}.p8"
+            set +e
+            xcrun altool --upload-app -f "$IPA" -t ios \
+              --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --output-format normal
+            RC=$?
+            set -e
+            rm -rf "$HOME/.appstoreconnect"
+            rm -f "$IPA"
+            if [ $RC -ne 0 ]; then
+              echo "::error::La subida a App Store Connect ha fallado (ver el mensaje de altool arriba)"
+              exit $RC
+            fi
             echo "Subida a TestFlight: build $GITHUB_RUN_NUMBER. Aparecerá en la app TestFlight en unos minutos."
             echo "### ANTENA PRO subida a TestFlight (build $GITHUB_RUN_NUMBER)" >> "$GITHUB_STEP_SUMMARY"
           else
-            cp build/export/*.ipa AntenaPro.ipa
-            ls -lh AntenaPro.ipa
+            cp "$IPA" AntenaPro.ipa
           fi
 
       - name: Compilar (sin firmar, solo comprobación)
