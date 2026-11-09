@@ -52,11 +52,38 @@ jobs:
           # Llavero temporal con el certificado de distribución
           KEYCHAIN="$RUNNER_TEMP/firma.keychain-db"
           KEYCHAIN_PASS="$(uuidgen)"
-          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          echo "$CERT_P12_BASE64" | tr -d ' \r\n' | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          # Normaliza el .p12/.pfx: OpenSSL lee también el cifrado AES que usa Windows y lo
+          # reescribe en el formato clásico que entiende "security" en macOS.
+          OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+          P12_PASS="$(printf '%s' "$CERT_PASSWORD" | tr -d '\r\n')"
+          if ! P12_PASS="$P12_PASS" "$OPENSSL" pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASS \
+               -nodes -out "$RUNNER_TEMP/cert.pem" 2>"$RUNNER_TEMP/p12.err"; then
+            if P12_PASS="$P12_PASS" "$OPENSSL" pkcs12 -legacy -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASS \
+                 -nodes -out "$RUNNER_TEMP/cert.pem" 2>>"$RUNNER_TEMP/p12.err"; then
+              echo "Certificado en formato antiguo: leído con -legacy"
+            else
+              cat "$RUNNER_TEMP/p12.err"
+              echo "::error::No se pudo abrir CERT_P12_BASE64 con CERT_PASSWORD. Revisa la contraseña (sin espacios al final) y que el secret sea el .p12/.pfx en base64."
+              exit 1
+            fi
+          fi
+          grep -q "PRIVATE KEY" "$RUNNER_TEMP/cert.pem" || {
+            echo "::error::El .p12 no contiene la clave privada (¿es un .cer renombrado?). Expórtalo con la clave privada."
+            exit 1
+          }
+          grep -m1 "subject=" "$RUNNER_TEMP/cert.pem" || true
+          IMPORT_PASS="$(uuidgen)"
+          IMPORT_PASS="$IMPORT_PASS" "$OPENSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/cert.pem" \
+            -passout env:IMPORT_PASS -out "$RUNNER_TEMP/cert-mac.p12"
+          rm -f "$RUNNER_TEMP/cert.pem" "$RUNNER_TEMP/p12.err"
+
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert-mac.p12" -P "$IMPORT_PASS" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/cert-mac.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           rm -f "$RUNNER_TEMP/cert.p12"
