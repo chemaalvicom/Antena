@@ -51,6 +51,7 @@ jobs:
           if [ -z "$CERT_P12_BASE64" ] || [ -z "$APP_PROFILE_BASE64" ] || [ -z "$TUNNEL_PROFILE_BASE64" ]; then
             echo "::warning::Faltan los secrets de firma: la IPA saldrá SIN FIRMAR y la VPN no funcionará. Ver FIRMA.md"
             echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "method=none" >> "$GITHUB_OUTPUT"
             { echo "TEAM_ID="; echo "APP_PROFILE_NAME="; echo "TUNNEL_PROFILE_NAME="; echo "EXPORT_METHOD=none"; } >> "$GITHUB_ENV"
             exit 0
           fi
@@ -134,6 +135,7 @@ jobs:
             echo "EXPORT_METHOD=$METHOD"
           } >> "$GITHUB_ENV"
           echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "method=$METHOD" >> "$GITHUB_OUTPUT"
           echo "Equipo $TEAM_ID - metodo $METHOD"
 
       # La configuración con la clave privada solo viaja dentro de builds de TestFlight
@@ -254,14 +256,14 @@ jobs:
 
       # Solo se publican IPAs que NO llevan la configuración de la VPN dentro.
       - uses: actions/upload-artifact@v4
-        if: steps.vpnconf.outputs.embedded != 'true' && env.EXPORT_METHOD != 'app-store-connect'
+        if: steps.vpnconf.outputs.embedded != 'true' && steps.signing.outputs.method != 'app-store-connect'
         with:
           name: AntenaPro-ipa
           path: AntenaPro.ipa
           retention-days: 30
 
       - name: Publicar release
-        if: steps.vpnconf.outputs.embedded != 'true' && env.EXPORT_METHOD != 'app-store-connect'
+        if: steps.vpnconf.outputs.embedded != 'true' && steps.signing.outputs.method != 'app-store-connect'
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED: ${{ steps.signing.outputs.signed }}
