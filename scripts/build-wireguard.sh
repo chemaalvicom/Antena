@@ -20,6 +20,11 @@ if [ ! -d "$WG/.git" ]; then
 fi
 git -C "$WG" fetch --depth 1 origin "$WG_COMMIT" 2>/dev/null || true
 git -C "$WG" checkout -q "$WG_COMMIT"
+# El Package.swift declara swift-tools-version 5.3 pero usa .iOS(.v15)/.macOS(.v12),
+# que los Xcode actuales solo aceptan a partir de 5.5.
+sed -i '' -E '1s/swift-tools-version:[0-9.]+/swift-tools-version:5.5/' "$WG/Package.swift" 2>/dev/null \
+  || sed -i -E '1s/swift-tools-version:[0-9.]+/swift-tools-version:5.5/' "$WG/Package.swift"
+head -1 "$WG/Package.swift"
 
 # Copia de GOROOT con el parche de WireGuard: los temporizadores cuentan el tiempo
 # en reposo del iPhone (si el parche no aplica en esta versión de Go, se sigue sin él).
