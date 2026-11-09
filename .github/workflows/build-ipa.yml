@@ -214,10 +214,38 @@ jobs:
           ls -lh "$IPA"
 
           if [ "$EXPORT_METHOD" = "app-store-connect" ]; then
+            # Limpia espacios y saltos de línea que se cuelan al pegar los secrets
+            ASC_KEY_ID="$(printf '%s' "$ASC_KEY_ID" | tr -d ' \r\n\t')"
+            ASC_ISSUER_ID="$(printf '%s' "$ASC_ISSUER_ID" | tr -d ' \r\n\t')"
+            echo "Key ID: ${#ASC_KEY_ID} caracteres (debe ser 10) · Issuer ID: ${#ASC_ISSUER_ID} caracteres (debe ser 36)"
+            [[ "$ASC_ISSUER_ID" =~ ^[0-9a-f-]{36}$ ]] || echo "::warning::ASC_ISSUER_ID no tiene forma de UUID (¿está intercambiado con ASC_KEY_ID?)"
+
             # altool busca la clave en ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8
             KEYDIR="$HOME/.appstoreconnect/private_keys"
             mkdir -p "$KEYDIR"
-            printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEYDIR/AuthKey_${ASC_KEY_ID}.p8"
+            KEYFILE="$KEYDIR/AuthKey_${ASC_KEY_ID}.p8"
+            printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e '/^$/d' > "$KEYFILE"
+            head -1 "$KEYFILE" | grep -q 'BEGIN PRIVATE KEY' || echo "::warning::ASC_KEY_P8 no empieza por -----BEGIN PRIVATE KEY-----"
+
+            # Comprobación previa contra la API de App Store Connect (mensaje de error claro)
+            python3 -m venv "$RUNNER_TEMP/jwtenv" >/dev/null && "$RUNNER_TEMP/jwtenv/bin/pip" install -q pyjwt cryptography
+            ASC_KEY_ID="$ASC_KEY_ID" ASC_ISSUER_ID="$ASC_ISSUER_ID" KEYFILE="$KEYFILE" "$RUNNER_TEMP/jwtenv/bin/python" - <<'PY' || true
+          import os, time, json, urllib.request, urllib.error, jwt
+          key = open(os.environ["KEYFILE"]).read()
+          try:
+              token = jwt.encode({"iss": os.environ["ASC_ISSUER_ID"], "iat": int(time.time()), "exp": int(time.time()) + 600,
+                                  "aud": "appstoreconnect-v1"}, key, algorithm="ES256", headers={"kid": os.environ["ASC_KEY_ID"]})
+          except Exception as e:
+              print("::warning::La clave .p8 no es válida:", e); raise SystemExit
+          req = urllib.request.Request("https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]=com.chemablanco.antenapro",
+                                       headers={"Authorization": "Bearer " + token})
+          try:
+              data = json.load(urllib.request.urlopen(req, timeout=30))
+              print("API de App Store Connect OK · apps con ese Bundle ID:", len(data.get("data", [])))
+          except urllib.error.HTTPError as e:
+              body = e.read().decode(errors="replace")
+              print(f"::warning::App Store Connect API respondió {e.code}: {body[:400]}")
+          PY
             set +e
             xcrun altool --upload-app -f "$IPA" -t ios \
               --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --output-format normal
