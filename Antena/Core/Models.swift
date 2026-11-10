@@ -28,6 +28,8 @@ struct Playlist: Identifiable, Codable, Hashable {
     var sourceURL: String?
     var channels: [Channel] = []
     var updatedAt = Date()
+    /// Guía de programación (XMLTV): de la cabecera url-tvg o, en Xtream, xmltv.php.
+    var epgURL: String?
 
     /// Grupos en el orden en que aparecen en la lista.
     var groups: [String] {
@@ -39,6 +41,13 @@ struct Playlist: Identifiable, Codable, Hashable {
         }
         return out
     }
+}
+
+/// Lista de favoritos con nombre (los canales siguen en "Todos").
+struct FavoriteList: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var name: String
+    var urls: [String] = []
 }
 
 /// Destino de navegación: un grupo concreto (o todos si `group` es nil) de una lista.

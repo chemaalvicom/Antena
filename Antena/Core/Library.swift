@@ -22,12 +22,14 @@ final class Library {
     var playlists: [Playlist] = []
     var favorites: [Channel] = []
     var recents: [Channel] = []
+    var favoriteLists: [FavoriteList] = []
 
     private var loaded = false
 
     private struct UserData: Codable {
         var favorites: [Channel]
         var recents: [Channel]
+        var favoriteLists: [FavoriteList]?
     }
 
     private static var folder: URL {
@@ -58,7 +60,17 @@ final class Library {
         if let d = try? Data(contentsOf: Self.userFile), let u = try? dec.decode(UserData.self, from: d) {
             favorites = u.favorites
             recents = u.recents
+            favoriteLists = u.favoriteLists ?? []
         }
+        // Listas antiguas sin guía: en Xtream se deduce de la propia dirección
+        var changed = false
+        for i in playlists.indices where playlists[i].epgURL == nil {
+            if let src = playlists[i].sourceURL, let epg = Self.xtreamEPG(from: src) {
+                playlists[i].epgURL = epg
+                changed = true
+            }
+        }
+        if changed { savePlaylists() }
     }
 
     private func savePlaylists() {
@@ -66,17 +78,19 @@ final class Library {
     }
 
     private func saveUser() {
-        let u = UserData(favorites: favorites, recents: recents)
+        let u = UserData(favorites: favorites, recents: recents, favoriteLists: favoriteLists)
         if let d = try? JSONEncoder().encode(u) { try? d.write(to: Self.userFile, options: .atomic) }
     }
 
     // MARK: Listas
 
     func addRemote(name: String, urlString: String, userAgent: String) async throws {
-        let channels = try await Self.download(urlString, userAgent: userAgent)
+        let result = try await Self.download(urlString, userAgent: userAgent)
         let fallback = URL(string: urlString)?.host ?? "Lista"
         let clean = name.trimmingCharacters(in: .whitespaces)
-        playlists.append(Playlist(name: clean.isEmpty ? fallback : clean, sourceURL: urlString, channels: channels))
+        var p = Playlist(name: clean.isEmpty ? fallback : clean, sourceURL: urlString, channels: result.channels)
+        p.epgURL = result.epg ?? Self.xtreamEPG(from: urlString)
+        playlists.append(p)
         savePlaylists()
     }
 
@@ -84,19 +98,31 @@ final class Library {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: url)
-        let channels = try Self.decode(data)
-        playlists.append(Playlist(name: url.deletingPathExtension().lastPathComponent, channels: channels))
+        let result = try Self.decode(data)
+        var p = Playlist(name: url.deletingPathExtension().lastPathComponent, channels: result.channels)
+        p.epgURL = result.epg
+        playlists.append(p)
         savePlaylists()
     }
 
     func refresh(_ id: UUID, userAgent: String) async throws {
         guard let src = playlists.first(where: { $0.id == id })?.sourceURL else { return }
-        let channels = try await Self.download(src, userAgent: userAgent)
+        let result = try await Self.download(src, userAgent: userAgent)
         if let i = playlists.firstIndex(where: { $0.id == id }) {
-            playlists[i].channels = channels
+            playlists[i].channels = result.channels
             playlists[i].updatedAt = Date()
+            if let epg = result.epg ?? Self.xtreamEPG(from: src), playlists[i].epgURL == nil {
+                playlists[i].epgURL = epg
+            }
             savePlaylists()
         }
+    }
+
+    func setEPG(_ id: UUID, url: String) {
+        guard let i = playlists.firstIndex(where: { $0.id == id }) else { return }
+        let clean = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        playlists[i].epgURL = clean.isEmpty ? nil : clean
+        savePlaylists()
     }
 
     func rename(_ id: UUID, to name: String) {
@@ -122,8 +148,80 @@ final class Library {
     func toggleFavorite(_ c: Channel) {
         if let i = favorites.firstIndex(where: { $0.url == c.url }) {
             favorites.remove(at: i)
+            for j in favoriteLists.indices { favoriteLists[j].urls.removeAll { $0 == c.url } }
         } else {
             favorites.append(c)
+        }
+        saveUser()
+    }
+
+    // MARK: Listas de favoritos
+
+    /// Canales de una lista de favoritos (nil = todos los favoritos).
+    func favorites(in listID: UUID?) -> [Channel] {
+        guard let listID, let list = favoriteLists.first(where: { $0.id == listID }) else { return favorites }
+        return list.urls.compactMap { u in favorites.first { $0.url == u } }
+    }
+
+    func isInList(_ c: Channel, _ listID: UUID) -> Bool {
+        favoriteLists.first { $0.id == listID }?.urls.contains(c.url) ?? false
+    }
+
+    func toggle(_ c: Channel, inList listID: UUID) {
+        guard let i = favoriteLists.firstIndex(where: { $0.id == listID }) else { return }
+        if let j = favoriteLists[i].urls.firstIndex(of: c.url) {
+            favoriteLists[i].urls.remove(at: j)
+        } else {
+            if !isFavorite(c) { favorites.append(c) }
+            favoriteLists[i].urls.append(c.url)
+        }
+        saveUser()
+    }
+
+    @discardableResult
+    func addFavoriteList(name: String) -> UUID {
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        let list = FavoriteList(name: clean.isEmpty ? "Lista \(favoriteLists.count + 1)" : clean)
+        favoriteLists.append(list)
+        saveUser()
+        return list.id
+    }
+
+    func renameFavoriteList(_ id: UUID, to name: String) {
+        guard let i = favoriteLists.firstIndex(where: { $0.id == id }), !name.isEmpty else { return }
+        favoriteLists[i].name = name
+        saveUser()
+    }
+
+    func deleteFavoriteList(_ id: UUID) {
+        favoriteLists.removeAll { $0.id == id }
+        saveUser()
+    }
+
+    /// Quita un canal de una lista concreta, o de favoritos si listID es nil.
+    func removeFavorite(_ c: Channel, from listID: UUID?) {
+        if let listID, let i = favoriteLists.firstIndex(where: { $0.id == listID }) {
+            favoriteLists[i].urls.removeAll { $0 == c.url }
+            saveUser()
+        } else if isFavorite(c) {
+            toggleFavorite(c)
+        }
+    }
+
+    /// Mueve un favorito una posición (delta -1 o +1) dentro de "Todos" o de una lista.
+    func moveFavorite(_ c: Channel, by delta: Int, in listID: UUID?) {
+        if let listID, let i = favoriteLists.firstIndex(where: { $0.id == listID }) {
+            var urls = favoriteLists[i].urls
+            guard let from = urls.firstIndex(of: c.url) else { return }
+            let to = from + delta
+            guard urls.indices.contains(to) else { return }
+            urls.swapAt(from, to)
+            favoriteLists[i].urls = urls
+        } else {
+            guard let from = favorites.firstIndex(where: { $0.url == c.url }) else { return }
+            let to = from + delta
+            guard favorites.indices.contains(to) else { return }
+            favorites.swapAt(from, to)
         }
         saveUser()
     }
@@ -152,7 +250,7 @@ final class Library {
 
     // MARK: Red
 
-    nonisolated static func download(_ s: String, userAgent: String) async throws -> [Channel] {
+    nonisolated static func download(_ s: String, userAgent: String) async throws -> (channels: [Channel], epg: String?) {
         guard let url = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)) else { throw LibraryError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 90)
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
@@ -163,11 +261,22 @@ final class Library {
         return try decode(data)
     }
 
-    nonisolated static func decode(_ data: Data) throws -> [Channel] {
+    nonisolated static func decode(_ data: Data) throws -> (channels: [Channel], epg: String?) {
         let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
         let channels = M3UParser.parse(text)
         if channels.isEmpty { throw LibraryError.empty }
-        return channels
+        return (channels, M3UParser.epgURL(in: text))
+    }
+
+    /// Guía de un proveedor Xtream: mismo servidor y cuenta que get.php, pero xmltv.php.
+    nonisolated static func xtreamEPG(from urlString: String) -> String? {
+        guard var comps = URLComponents(string: urlString), comps.path.lowercased().hasSuffix("get.php"),
+              let items = comps.queryItems,
+              let user = items.first(where: { $0.name.lowercased() == "username" })?.value,
+              let pass = items.first(where: { $0.name.lowercased() == "password" })?.value else { return nil }
+        comps.path = String(comps.path.dropLast("get.php".count)) + "xmltv.php"
+        comps.queryItems = [URLQueryItem(name: "username", value: user), URLQueryItem(name: "password", value: pass)]
+        return comps.string
     }
 
     // MARK: Varias listas desde el portapapeles

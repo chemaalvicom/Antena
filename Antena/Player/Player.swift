@@ -147,9 +147,10 @@ final class VLCPlaybackModel: ObservableObject {
     @Published var failed = false
     private var timer: Timer?
 
-    func start(channel: Channel, userAgent: String, caching: Int) {
+    func start(channel: Channel, userAgent: String, caching: Int, muted: Bool = false) {
         guard let url = channel.streamURL else { failed = true; return }
         let media = VLCMedia(url: url)
+        if muted { media.addOption(":no-audio") }
         media.addOption(":http-user-agent=\(channel.userAgent ?? userAgent)")
         if let ref = channel.referrer { media.addOption(":http-referrer=\(ref)") }
         media.addOption(":network-caching=\(caching)")
@@ -183,7 +184,7 @@ final class VLCPlaybackModel: ObservableObject {
     }
 }
 
-private struct VLCVideoSurface: UIViewRepresentable {
+struct VLCVideoSurface: UIViewRepresentable {
     let player: VLCMediaPlayer
 
     func makeUIView(context: Context) -> UIView {

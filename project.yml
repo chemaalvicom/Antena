@@ -9,7 +9,7 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "2.0.0"
+    MARKETING_VERSION: "2.1.0"
     CURRENT_PROJECT_VERSION: "1"
     # Firma: los rellena el workflow de GitHub Actions a partir de los secrets.
     # Vacíos = compilación sin firmar (solo para comprobar que compila).

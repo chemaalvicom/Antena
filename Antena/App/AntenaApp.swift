@@ -5,6 +5,8 @@ import AVFoundation
 struct AntenaApp: App {
     @State private var library = Library()
     @State private var vpn = VPNManager()
+    @State private var epg = EPGStore()
+    @State private var parental = ParentalControl()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -19,6 +21,8 @@ struct AntenaApp: App {
             GateView()
                 .environment(library)
                 .environment(vpn)
+                .environment(epg)
+                .environment(parental)
                 .onAppear { library.load() }
                 .task { if !Launch.isDemo { await vpn.start() } }
         }
@@ -38,7 +42,7 @@ struct GateView: View {
     var body: some View {
         Group {
             if vpn.hasConnectedOnce || Launch.isDemo {
-                RootView()
+                TVShell()
             } else {
                 StartupView()
                     .tint((Accent(rawValue: accent) ?? .naranja).color)
@@ -46,42 +50,5 @@ struct GateView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: vpn.hasConnectedOnce)
-    }
-}
-
-struct RootView: View {
-    @AppStorage("accent") private var accent = Accent.naranja.rawValue
-    @AppStorage("theme") private var theme = Theme.oscuro.rawValue
-    @Environment(Library.self) private var library
-    @State private var playing: Channel?
-    @State private var tab = Int(Launch.value("-tab") ?? "") ?? 0
-
-    var body: some View {
-        TabView(selection: $tab) {
-            PlaylistsView(playing: $playing)
-                .tabItem { Label("Listas", systemImage: "list.bullet.rectangle") }
-                .tag(0)
-            FavoritesView(playing: $playing)
-                .tabItem { Label("Favoritos", systemImage: "star") }
-                .tag(1)
-            RecentsView(playing: $playing)
-                .tabItem { Label("Recientes", systemImage: "clock") }
-                .tag(2)
-            SettingsView()
-                .tabItem { Label("Ajustes", systemImage: "gearshape") }
-                .tag(3)
-        }
-        .task {
-            guard Launch.has("-play") else { return }
-            library.load()
-            try? await Task.sleep(for: .milliseconds(600))
-            playing = library.playlists.first?.channels.first
-        }
-        .tint((Accent(rawValue: accent) ?? .naranja).color)
-        .preferredColorScheme((Theme(rawValue: theme) ?? .oscuro).scheme)
-        .fullScreenCover(item: $playing) { channel in
-            PlayerScreen(channel: channel)
-                .tint((Accent(rawValue: accent) ?? .naranja).color)
-        }
     }
 }

@@ -79,77 +79,18 @@ struct ChannelLogo: View {
     }
 }
 
-// MARK: - Favoritos
-
-struct FavoritesView: View {
-    @Environment(Library.self) private var library
-    @Binding var playing: Channel?
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if library.favorites.isEmpty {
-                    ContentUnavailableView(
-                        "Sin favoritos",
-                        systemImage: "star",
-                        description: Text("Desliza un canal hacia la izquierda para marcarlo como favorito.")
-                    )
-                } else {
-                    List {
-                        ForEach(library.favorites) { ch in
-                            ChannelRow(channel: ch) { playing = ch }
-                        }
-                        .onDelete { library.deleteFavorites(at: $0) }
-                        .onMove { library.moveFavorites(from: $0, to: $1) }
-                    }
-                    .listStyle(.plain)
-                    .toolbar { EditButton() }
-                }
-            }
-            .navigationTitle("Favoritos")
-        }
-    }
-}
-
-// MARK: - Recientes
-
-struct RecentsView: View {
-    @Environment(Library.self) private var library
-    @Binding var playing: Channel?
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if library.recents.isEmpty {
-                    ContentUnavailableView(
-                        "Nada reciente",
-                        systemImage: "clock",
-                        description: Text("Los canales que veas aparecerán aquí.")
-                    )
-                } else {
-                    List(library.recents) { ch in
-                        ChannelRow(channel: ch) { playing = ch }
-                    }
-                    .listStyle(.plain)
-                    .toolbar {
-                        Button("Borrar", role: .destructive) { library.clearRecents() }
-                    }
-                }
-            }
-            .navigationTitle("Recientes")
-        }
-    }
-}
-
 // MARK: - Ajustes
 
 struct SettingsView: View {
     @Environment(VPNManager.self) private var vpn
+    @Environment(Library.self) private var library
+    @Environment(ParentalControl.self) private var parental
     @AppStorage("engine") private var engine = Engine.auto.rawValue
     @AppStorage("userAgent") private var userAgent = Defaults.userAgent
     @AppStorage("vlcCaching") private var caching = 1500
     @AppStorage("accent") private var accent = Accent.naranja.rawValue
-    @AppStorage("theme") private var theme = Theme.oscuro.rawValue
+    @AppStorage("livePreview") private var livePreview = true
+    @State private var showLists = false
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -174,10 +115,31 @@ struct SettingsView: View {
                     Text("ANTENA PRO solo reproduce a través de tu servidor WireGuard.")
                 }
 
+                Section("Contenido") {
+                    Button { showLists = true } label: {
+                        LabeledContent {
+                            Text("\(library.playlists.count)")
+                        } label: {
+                            Label("Listas", systemImage: "list.bullet.rectangle")
+                        }
+                    }
+                    NavigationLink { EPGSettingsView() } label: {
+                        Label("Guía de programación", systemImage: "tablecells")
+                    }
+                    NavigationLink { ParentalSettingsView() } label: {
+                        LabeledContent {
+                            Text(parental.enabled ? "Activado" : "Desactivado")
+                        } label: {
+                            Label("Control parental", systemImage: "lock.shield")
+                        }
+                    }
+                }
+
                 Section {
                     Picker("Motor", selection: $engine) {
                         ForEach(Engine.allCases) { Text($0.title).tag($0.rawValue) }
                     }
+                    Toggle("Vista previa en vídeo", isOn: $livePreview)
                     Stepper(value: $caching, in: 300...10000, step: 300) {
                         HStack {
                             Text("Búfer VLC")
@@ -188,7 +150,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Reproducción")
                 } footer: {
-                    Text("Automático usa el reproductor de Apple para HLS (.m3u8), con AirPlay y Picture in Picture, y VLC para todo lo demás. Sube el búfer si un canal se corta.")
+                    Text("Automático usa el reproductor de Apple para HLS (.m3u8), con AirPlay y Picture in Picture, y VLC para todo lo demás. Sube el búfer si un canal se corta. La vista previa abre el canal sin sonido; si tu proveedor solo permite una conexión a la vez, desactívala.")
                 }
 
                 Section {
@@ -207,10 +169,7 @@ struct SettingsView: View {
                     Text("Algunos proveedores solo aceptan ciertos User-Agent. Si un canal define el suyo en la lista, se usa ese.")
                 }
 
-                Section("Apariencia") {
-                    Picker("Tema", selection: $theme) {
-                        ForEach(Theme.allCases) { Text($0.rawValue.capitalized).tag($0.rawValue) }
-                    }
+                Section("Color de acento") {
                     HStack(spacing: 14) {
                         ForEach(Accent.allCases) { a in
                             Circle()
@@ -236,6 +195,9 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Ajustes")
+            .scrollContentBackground(.hidden)
+            .background(TVColor.bg)
+            .sheet(isPresented: $showLists) { PlaylistsManagerView() }
         }
     }
 }

@@ -74,6 +74,25 @@ enum M3UParser {
         return channels
     }
 
+    /// Dirección de la guía en la cabecera: #EXTM3U url-tvg="…" (o x-tvg-url). Si hay varias, la primera.
+    static func epgURL(in raw: String) -> String? {
+        var head = String(raw.prefix(4096))
+        if head.hasPrefix("\u{FEFF}") { head.removeFirst() }
+        guard let first = head.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).first else { return nil }
+        let line = String(first)
+        guard line.uppercased().hasPrefix("#EXTM3U") else { return nil }
+        let ns = line as NSString
+        for m in attrRegex.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+            let key = ns.substring(with: m.range(at: 1)).lowercased()
+            guard key == "url-tvg" || key == "x-tvg-url" else { continue }
+            let value = ns.substring(with: m.range(at: 2))
+            if let url = value.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }) {
+                return url
+            }
+        }
+        return nil
+    }
+
     /// Separa los atributos y el nombre visible: el nombre va tras la primera coma fuera de comillas.
     private static func parseInfo(_ line: String) -> (attrs: [String: String], title: String) {
         var inQuotes = false
